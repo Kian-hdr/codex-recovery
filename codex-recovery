@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""Small, explicit local file recovery. Python 3.10+, macOS and Linux."""
+import argparse
+import datetime
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import sys
+import uuid
+
+VERSION = "1.0.0"
+MAX_BYTES = 512 * 1024 * 1024
+PROTECTED = {"/", "/Applications", "/Library", "/System", "/Users", "/Volumes",
+             "/private", "/usr", "/bin", "/sbin", "/opt", "/etc", "/var",
+             "/home", "/root", "/tmp", "/dev", "/proc", "/sys", "/boot", "/run"}
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+def lexists(path):
+    return os.path.lexists(path)
+
+
+def inside(path, parent):
+    return path == parent or parent in path.parents
+
+
+def no_symlink_components(path):
+    for component in (path, *path.parents):
+        if component.is_symlink():
+            fail(f"Symlinked directory component refused: {component}")
+
+
+def validate(path, store):
+    path = Path(os.path.abspath(path))
+    # Resolve ancestors only: a final symlink is an item, never its target.
+    actual = path.parent.resolve() / path.name
+    home = Path.home().resolve()
+    if str(path) in PROTECTED or str(actual) in PROTECTED or actual == home or path == Path.home():
+        fail(f"Protected root refused: {path}")
+    if inside(actual, store) or inside(store, actual):
+        fail("The recovery store and its ancestors cannot be archived or restored")
+    return actual
+
+
+def size(path):
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or stat.S_ISREG(info.st_mode):
+        return info.st_size
+    if not stat.S_ISDIR(info.st_mode):
+        fail(f"Special files are unsupported: {path}")
+    total = info.st_size
+    with os.scandir(path) as children:
+        for child in children:
+            total += size(Path(child.path))
+            if total > MAX_BYTES:
+                break
+    return total
+
+
+def copy(source, target):
+    if source.is_symlink():
+        os.symlink(os.readlink(source), target)
+    elif source.is_dir():
+        shutil.copytree(source, target, symlinks=True)
+    else:
+        with source.open("rb") as reader, target.open("xb") as writer:
+            shutil.copyfileobj(reader, writer)
+        shutil.copystat(source, target, follow_symlinks=False)
+
+
+def prepare_store(raw):
+    store = Path(os.path.abspath(os.path.expanduser(raw)))
+    no_symlink_components(store)
+    if str(store) in PROTECTED or store == Path.home() or store == Path.home().resolve():
+        fail("Choose a dedicated recovery directory, not a system or home root")
+    store.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = store.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        fail("Recovery directory must be owned by you and accessible only to you (mode 700)")
+    items = store / "items"
+    no_symlink_components(items)
+    items.mkdir(mode=0o700, exist_ok=True)
+    info = items.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        fail("Items directory must be owned by you and mode 700")
+    return store
+
+
+def archive(action, sources, store):
+    # Preflight every argument before changing any source.
+    checked = []
+    for raw in sources:
+        source = validate(raw, store)
+        if not lexists(source):
+            fail(f"Not found: {source}")
+        count = size(source)
+        if count > MAX_BYTES:
+            fail("Item exceeds 512 MiB; use a separate backup")
+        if action == "trash" and source.lstat().st_dev != store.stat().st_dev:
+            fail("Trash requires the same filesystem as the store; use stash instead")
+        if any(inside(source, prior) or inside(prior, source) for prior in checked):
+            fail("Overlapping source arguments refused")
+        checked.append(source)
+    for source in checked:
+        identifier = uuid.uuid4().hex
+        pending = store / "items" / (".pending-" + identifier)
+        pending.mkdir(mode=0o700)
+        metadata = {"version": 1, "action": action, "original_path": str(source),
+                    "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        try:
+            (pending / "metadata.json").write_text(json.dumps(metadata) + "\n")
+            if action == "trash":
+                os.rename(source, pending / "payload")
+            else:
+                copy(source, pending / "payload")
+            os.rename(pending, store / "items" / identifier)
+        except Exception:
+            # Preserve any partial entry for manual recovery; never discard payloads.
+            print(f"Incomplete entry preserved at {pending}", file=sys.stderr)
+            raise
+        print(identifier)
+
+
+def entry_path(identifier, store):
+    if not re.fullmatch(r"[0-9a-f]{32}", identifier):
+        fail("Invalid entry identifier")
+    entry = store / "items" / identifier
+    if entry.is_symlink() or not entry.is_dir():
+        fail("Entry not found")
+    if (entry / "metadata.json").is_symlink():
+        fail("Symlinked metadata refused")
+    return entry
+
+
+def restore(identifier, store):
+    entry = entry_path(identifier, store)
+    meta = json.loads((entry / "metadata.json").read_text())
+    if meta.get("version") != 1 or meta.get("action") not in ("stash", "trash"):
+        fail("Unsupported metadata")
+    original = Path(meta["original_path"])
+    if not original.is_absolute():
+        fail("Restore destination must be absolute")
+    target = validate(original, store)
+    if target != original:
+        fail("Restore parent changed through a symlink; restore manually after inspection")
+    no_symlink_components(target.parent)
+    if lexists(target):
+        fail(f"Destination exists; refusing to overwrite: {target}")
+    if not lexists(entry / "payload"):
+        fail("Entry payload missing")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Copy preserves the recovery entry, including if copying fails. Never overwrite.
+    copy(entry / "payload", target)
+    print(f"Restored: {target} (entry retained)")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action="version", version=VERSION)
+    parser.add_argument("--store", default=os.environ.get("CODEX_RECOVERY_STORE",
+                        str(Path.home() / ".local/state/codex-recovery")))
+    subs = parser.add_subparsers(dest="command", required=True)
+    for action in ("stash", "trash"):
+        subs.add_parser(action).add_argument("paths", nargs="+")
+    subs.add_parser("list")
+    subs.add_parser("restore").add_argument("entry")
+    args = parser.parse_args()
+    os.umask(0o077)
+    try:
+        store = prepare_store(args.store)
+        lock = store / ".lock"
+        descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            if args.command in ("stash", "trash"):
+                archive(args.command, args.paths, store)
+            elif args.command == "restore":
+                restore(args.entry, store)
+            else:
+                for entry in sorted((store / "items").iterdir()):
+                    if re.fullmatch(r"[0-9a-f]{32}", entry.name):
+                        validated = entry_path(entry.name, store)
+                        meta = json.loads((validated / "metadata.json").read_text())
+                        print(json.dumps({"id": entry.name, **meta}, ensure_ascii=True))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f"codex-recovery: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
