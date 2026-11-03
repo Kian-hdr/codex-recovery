@@ -8,11 +8,15 @@ Independent utility. Not affiliated with or endorsed by OpenAI. Adapted from
 an original local helper; this portable first release deliberately contains no
 Time Machine, APFS, snapshot, automatic cleanup, or backup administration.
 
-<!-- direct-downloads -->
-[![Download Python CLI · macOS and Linux](https://img.shields.io/badge/Download%20Python%20CLI%20%C2%B7%20macOS%20and%20Linux-24292F?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Kian-hdr/codex-recovery/releases/download/v1.0.0/codex-recovery)
+## Download
 
-[Download Python CLI · macOS and Linux](https://github.com/Kian-hdr/codex-recovery/releases/download/v1.0.0/codex-recovery) · [Release v1.0.0](https://github.com/Kian-hdr/codex-recovery/releases/tag/v1.0.0)
-<!-- /direct-downloads -->
+<p>
+<a href="https://github.com/Kian-hdr/codex-recovery/releases/download/v1.0.0/codex-recovery"><img src="docs/assets/downloads/download_1.svg" width="240" height="48" alt="Download Python CLI"></a>
+</p>
+
+[macOS and Linux · Python 3.10+ · v1.0.0](https://github.com/Kian-hdr/codex-recovery/releases/download/v1.0.0/codex-recovery)
+
+[Release notes](https://github.com/Kian-hdr/codex-recovery/releases/tag/v1.0.0)
 
 ## Requirements and installation
 
