@@ -1,4 +1,4 @@
-# Codex Recovery
+<p align="center"><strong>Codex Recovery</strong></p>
 
 A small local recovery CLI for files changed by coding agents or people.
 Stash a copy before editing, move an item into a private recovery directory,
@@ -8,9 +8,7 @@ Independent utility. Not affiliated with or endorsed by OpenAI. Adapted from
 an original local helper; this portable first release deliberately contains no
 Time Machine, APFS, snapshot, automatic cleanup, or backup administration.
 
-## Download
-
-<p>
+<p align="center">
 <a href="https://github.com/Kian-hdr/codex-recovery/releases/download/v1.0.0/codex-recovery"><img src="docs/assets/downloads/download_1.svg" width="240" height="48" alt="Download Python CLI"></a>
 </p>
 
